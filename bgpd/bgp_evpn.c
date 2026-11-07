@@ -5664,29 +5664,60 @@ void bgp_evpn_withdraw_type5_route(struct bgp *bgp_vrf, const struct bgp_path_in
 /* withdraw all type-5 routes for an address family */
 void bgp_evpn_withdraw_type5_routes(struct bgp *bgp_vrf, afi_t afi, safi_t safi)
 {
-	struct bgp_table *table = NULL;
+	struct bgp *bgp_evpn = NULL;
+	struct bgp_dest *rddest = NULL;
 	struct bgp_dest *dest = NULL;
+	struct bgp_table *table = NULL;
 	struct bgp_path_info *pi;
-	uint32_t addpath_id;
 
-	table = bgp_vrf->rib[afi][safi];
+	bgp_evpn = bgp_get_evpn();
+	if (!bgp_evpn)
+		return;
+
+	/*
+	 * Walk the global EVPN table under the VRF's RD rather than the VRF
+	 * RIB.  A local type-5 is keyed by the VRF path it was exported from
+	 * (type5_originator), and a withdrawal by that key only reaches the
+	 * type-5 of the path it is handed: not one exported from another
+	 * path of the prefix, nor one whose path is already gone.  Stopping
+	 * the VRF's export has to remove every type-5 of this address family
+	 * that a VRF path originated.  The default-originate route carries
+	 * no originator and stays; its own command removes it.
+	 */
+	rddest = bgp_node_lookup(bgp_evpn->rib[AFI_L2VPN][SAFI_EVPN],
+				 (struct prefix *)&bgp_vrf->vrf_prd);
+	if (!rddest)
+		return;
+
+	table = bgp_dest_get_bgp_table_info(rddest);
 	for (dest = bgp_table_top(table); dest; dest = bgp_route_next(dest)) {
-		/* Use _non_supp variant: withdraw must not skip suppressed
-		 * routes. A route may have been advertised while unsuppressed
-		 * and later re-suppressed. Skipping it would leave stale
-		 * type-5s in the EVPN table.
-		 */
-		for (pi = bgp_dest_get_bgp_path_info(dest); pi; pi = pi->next) {
-			if (!is_route_injectable_into_evpn_non_supp(pi))
-				continue;
-			addpath_id = bgp_evpn_addpath_id_for_path(bgp_vrf, pi, afi);
-			bgp_evpn_withdraw_type5_route(bgp_vrf, pi, bgp_dest_get_prefix(dest), afi,
-						      safi, addpath_id);
+		const struct prefix_evpn *evp =
+			(const struct prefix_evpn *)bgp_dest_get_prefix(dest);
 
-			if (advertise_type5_routes_bestpath(bgp_vrf, afi))
-				break;
+		if (evp->prefix.route_type != BGP_EVPN_IP_PREFIX_ROUTE)
+			continue;
+		if (afi == AFI_IP && !IS_IPADDR_V4(&evp->prefix.prefix_addr.ip))
+			continue;
+		if (afi == AFI_IP6 && !IS_IPADDR_V6(&evp->prefix.prefix_addr.ip))
+			continue;
+
+		for (pi = bgp_dest_get_bgp_path_info(dest); pi; pi = pi->next) {
+			if (!bgp_evpn_is_path_local(bgp_evpn, pi))
+				continue;
+			if (CHECK_FLAG(pi->flags, BGP_PATH_REMOVED))
+				continue;
+			if (!pi->extra || !pi->extra->evpn ||
+			    !pi->extra->evpn->type5_originator)
+				continue;
+
+			frrtrace(2, frr_bgp, evpn_withdraw_type5, bgp_vrf->vrf_id, evp);
+			bgp_path_info_mark_for_delete(dest, pi);
+			bgp_process(bgp_evpn, dest, pi, AFI_L2VPN, SAFI_EVPN);
 		}
 	}
+
+	/* Unlock RD node. */
+	bgp_dest_unlock_node(rddest);
 }
 
 /*
@@ -5750,15 +5781,30 @@ void bgp_evpn_advertise_type5_routes(struct bgp *bgp_vrf, afi_t afi,
 			if (!is_route_injectable_into_evpn(pi))
 				continue;
 
-			if (CHECK_FLAG(pi->flags, BGP_PATH_REMOVED) ||
-			    (!CHECK_FLAG(pi->flags, BGP_PATH_SELECTED) &&
-			     !CHECK_FLAG(pi->flags, BGP_PATH_MULTIPATH)))
+			if (CHECK_FLAG(pi->flags, BGP_PATH_REMOVED))
+				continue;
+
+			/*
+			 * Without gateway-ip, the prefix is exported from its
+			 * best path only: bgp_process_evpn_route_injection()
+			 * advertises and withdraws the local type-5 keyed by
+			 * that path (type5_originator).  Exporting the first
+			 * multipath entry here instead leaves a type-5 the best
+			 * path's withdrawal can never find.
+			 */
+			if (advertise_type5_routes_bestpath(bgp_vrf, afi)) {
+				if (!CHECK_FLAG(pi->flags, BGP_PATH_SELECTED))
+					continue;
+
+				bgp_evpn_export_type5_route(bgp_vrf, dest, pi, afi, safi);
+				break;
+			}
+
+			if (!CHECK_FLAG(pi->flags, BGP_PATH_SELECTED) &&
+			    !CHECK_FLAG(pi->flags, BGP_PATH_MULTIPATH))
 				continue;
 
 			bgp_evpn_export_type5_route(bgp_vrf, dest, pi, afi, safi);
-
-			if (advertise_type5_routes_bestpath(bgp_vrf, afi))
-				break;
 		}
 	}
 }
