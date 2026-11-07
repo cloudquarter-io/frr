@@ -9,31 +9,24 @@
 """
 test_bgp_evpn_type5_bulk_export.py
 
-Check that the bulk EVPN type-5 export and withdrawal act on the VRF best
-path, as the per-prefix injection does.
+Check that the bulk EVPN type-5 export and withdrawal leave exactly the
+type-5 the VRF best path exports, whatever the EVPN table held before.
 
 With "advertise ipv4 unicast" (no gateway-ip), a VRF prefix is exported to
 EVPN from its best path only, and the local type-5 is keyed by the VRF path
-it was exported from. The bulk export that runs when the advertisement is
-(re)configured walked the prefix's path list and exported the first path
-flagged selected OR multipath, and the bulk withdrawal withdrew the type-5
-keyed by that same first path. With two multipath-equal paths for one
-prefix, the newer, non-best path is listed first, so:
-
-- "no advertise ipv4 unicast" withdrew by the non-best path's key, found
-  nothing, and left the best path's type-5 advertised;
-- "advertise ipv4 unicast" exported the non-best path, and when that path
-  went away its type-5 stayed, as the per-prefix withdrawal only ever
-  withdraws by the best path's key.
-
-Both left a type-5 nothing could withdraw any more, except a bgpd restart.
+it was exported from. The bulk withdrawal that runs when the advertisement
+is removed or reconfigured withdrew by the key of the first path in the
+prefix's list and stopped, so a type-5 exported from another path of the
+prefix stayed advertised; the bulk export exported the first path flagged
+selected or multipath, which is not the best path while a path sits
+unsorted at the head of the list. Both leave a type-5 nothing withdraws
+any more, except a bgpd restart.
 
 r1 is a VTEP with vrf-a (L3VNI 100) and two eBGP peers in it, r2 (AS 65002)
 and r3 (AS 65003), both announcing 192.0.2.10/32 under maximum-paths with
 "bgp bestpath as-path multipath-relax", so the two paths are multipath and
 the AS path of the EVPN type-5 names the VRF path it was exported from. r3
-starts shut down so r2's path is the older one and the best; r3's path is
-the newer one, the non-best multipath entry listed first.
+starts shut down so r2's path is the older one and the best.
 
 Topology:
 
@@ -136,20 +129,20 @@ def teardown_module(_mod):
 
 
 def _vrf_paths(router):
-    "Return (peer, best, multipath) of the VRF paths for PREFIX, in list order."
+    "Return the (peer, best, multipath) of the VRF paths for PREFIX, sorted by peer."
 
     output = json.loads(
         router.vtysh_cmd("show bgp vrf {} ipv4 unicast {} json".format(VRF, PREFIX))
         or "{}"
     )
-    return [
+    return sorted(
         (
             path.get("peer", {}).get("peerId"),
             bool(path.get("bestpath", {}).get("overall")),
             bool(path.get("multipath")),
         )
         for path in output.get("paths", [])
-    ]
+    )
 
 
 def _evpn_type5_paths(router):
@@ -212,10 +205,12 @@ def _set_advertise(present):
 
 # r2 up alone: its path is the best and the only one.
 ONLY_R2 = [(R2, True, False)]
-# r3 up after r2: r2's older path stays best, r3's newer path is the non-best
-# multipath entry and bgpd lists it first. That order is what the bulk export
-# and withdrawal walked.
-R3_THEN_R2 = [(R3, False, True), (R2, True, True)]
+# r3 up alone.
+ONLY_R3 = [(R3, True, False)]
+# both up, r2's older path the best, both multipath.
+BOTH_R2_BEST = sorted([(R2, True, True), (R3, False, True)])
+# both up, r3's older path the best.
+BOTH_R3_BEST = sorted([(R2, False, True), (R3, True, True)])
 
 
 def test_bgp_evpn_type5_initial():
@@ -232,29 +227,23 @@ def test_bgp_evpn_type5_second_path_keeps_best():
     if tgen.routers_have_failure():
         pytest.skip(tgen.errors)
 
-    step("Bring r3 up: a second, non-best multipath entry, listed first")
+    step("Bring r3 up: a second, non-best multipath path; still one type-5, from r2")
     _set_peer_up("r3", 65003, R1_FROM_R3, True)
-    _check(R3_THEN_R2, [PATH_R2])
+    _check(BOTH_R2_BEST, [PATH_R2])
 
 
-def test_bgp_evpn_type5_bulk_withdraw():
+def test_bgp_evpn_type5_bulk_withdraw_and_export():
     tgen = get_topogen()
     if tgen.routers_have_failure():
         pytest.skip(tgen.errors)
 
     step("no advertise ipv4 unicast: the VRF's type-5 is gone")
     _set_advertise(False)
-    _check(R3_THEN_R2, [])
-
-
-def test_bgp_evpn_type5_bulk_export():
-    tgen = get_topogen()
-    if tgen.routers_have_failure():
-        pytest.skip(tgen.errors)
+    _check(BOTH_R2_BEST, [])
 
     step("advertise ipv4 unicast: one type-5, exported from the best path")
     _set_advertise(True)
-    _check(R3_THEN_R2, [PATH_R2])
+    _check(BOTH_R2_BEST, [PATH_R2])
 
 
 def test_bgp_evpn_type5_non_best_path_removed():
@@ -266,34 +255,51 @@ def test_bgp_evpn_type5_non_best_path_removed():
     _set_peer_up("r3", 65003, R1_FROM_R3, False)
     _check(ONLY_R2, [PATH_R2])
 
+    step("Bring r3 back: two paths, still one type-5 from r2")
+    _set_peer_up("r3", 65003, R1_FROM_R3, True)
+    _check(BOTH_R2_BEST, [PATH_R2])
+
+
+def test_bgp_evpn_type5_best_path_removed():
+    tgen = get_topogen()
+    if tgen.routers_have_failure():
+        pytest.skip(tgen.errors)
+
+    step("Shut r2: r3's path becomes best, the type-5 follows it")
+    _set_peer_up("r2", 65002, R1_FROM_R2, False)
+    _check(ONLY_R3, [PATH_R3])
+
+    step("Bring r2 back as the newer path: two paths, the type-5 stays r3's")
+    _set_peer_up("r2", 65002, R1_FROM_R2, True)
+    _check(BOTH_R3_BEST, [PATH_R3])
+
+
+def test_bgp_evpn_type5_bulk_withdraw_sweeps_every_local_path():
+    tgen = get_topogen()
+    if tgen.routers_have_failure():
+        pytest.skip(tgen.errors)
+
+    # Whatever the EVPN table holds for the prefix after the best path moved
+    # (a bgpd without the previous fixes keeps the old best path's type-5 next
+    # to the new one), removing the advertisement must leave none.
+    step("no advertise ipv4 unicast: no type-5 is left, whichever path exported it")
+    _set_advertise(False)
+    _check(BOTH_R3_BEST, [])
+
+    step("advertise ipv4 unicast: exactly one type-5, from the best path (r3)")
+    _set_advertise(True)
+    _check(BOTH_R3_BEST, [PATH_R3])
+
 
 def test_bgp_evpn_type5_last_path_removed():
     tgen = get_topogen()
     if tgen.routers_have_failure():
         pytest.skip(tgen.errors)
 
-    step("Shut r2: the VRF has no path left and EVPN no type-5")
-    _set_peer_up("r2", 65002, R1_FROM_R2, False)
-    _check([], [])
-
-
-def test_bgp_evpn_type5_best_path_removed_first():
-    tgen = get_topogen()
-    if tgen.routers_have_failure():
-        pytest.skip(tgen.errors)
-
-    step("Bring r2 then r3 back: the same two paths, one type-5")
-    _set_peer_up("r2", 65002, R1_FROM_R2, True)
-    _check(ONLY_R2, [PATH_R2])
-    _set_peer_up("r3", 65003, R1_FROM_R3, True)
-    _check(R3_THEN_R2, [PATH_R2])
-
-    step("Shut r2: r3's path becomes best, the type-5 follows it")
-    _set_peer_up("r2", 65002, R1_FROM_R2, False)
-    _check([(R3, True, False)], [PATH_R3])
-
-    step("Shut r3: nothing left")
+    step("Shut r3 (best) then r2: the VRF has no path left and EVPN no type-5")
     _set_peer_up("r3", 65003, R1_FROM_R3, False)
+    _check([(R2, True, False)], [PATH_R2])
+    _set_peer_up("r2", 65002, R1_FROM_R2, False)
     _check([], [])
 
 
