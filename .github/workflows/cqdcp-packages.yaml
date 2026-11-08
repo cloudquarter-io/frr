@@ -46,6 +46,10 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # The scripts run as root and read this checkout with git.
+      - name: Let root read the checkout
+        run: sudo git config --system --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Build the packages
         run: sudo cqdcp/build-debs.sh out
 
@@ -83,6 +87,10 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # The scripts run as root and read this checkout with git.
+      - name: Let root read the checkout
+        run: sudo git config --system --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Run the topotests on frr-stable's package
         run: sudo cqdcp/test-debs.sh fail stock
 
@@ -98,6 +106,10 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           fetch-tags: true
+
+      # The scripts run as root and read this checkout with git.
+      - name: Let root read the checkout
+        run: sudo git config --system --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Download the packages
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
