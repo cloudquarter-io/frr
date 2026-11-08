@@ -39,6 +39,26 @@ black-holed until bgpd restarts). The branch closes three shapes of it:
    `bgp_evpn_type5_bulk_export` and `bgp_evpn_type5_withdraw_sweep`: each
    fails on the stock package and passes on the build.
 
+FRR 10.7.1 can also drop the BFD session of a neighbour that inherits BFD
+from a peer-group, while bgpd keeps reporting it Up: when the neighbour is
+deleted (a dynamic neighbour whose session drops, or a configured one moved
+or re-added), its session is only deregistered once the old peer object is
+freed, after its routes are cleared; a new peer object for the same neighbour
+registers the same session first, and the late deregistration deletes it.
+The route servers' listen-range clients hit this. The branch closes it with:
+
+4. `bgpd: release a deleted peer's BFD session before the peer is freed` —
+   the backport of FRRouting/frr#24176 (open upstream): a peer being deleted
+   releases its session at once instead of keeping the group's BFD.
+5. The topotest `bgp_bfd_peer_group_move` from the same pull request,
+   installing its routes with staticd instead of sharpd (the Debian packages
+   ship no sharpd): it fails on the stock package and passes on the build.
+   The pull request's `bgp_ospf_bfd_peer_group_move` is carried but not run:
+   10.7.1's bfdd takes a session down whenever one of its clients
+   deregisters, even while another still holds it, so the test fails at its
+   first step (OSPF's BFD removed, bgpd left as the only client) on the stock
+   package and on the build alike, before any peer-group move.
+
 ## Build, proof and publication
 
 `.github/workflows/cqdcp-packages.yaml` runs on every push to a `cqdcp/**`

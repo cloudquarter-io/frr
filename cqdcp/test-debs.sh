@@ -21,7 +21,7 @@ set -euo pipefail
 
 expect="${1:?pass|fail}"; what="${2:?<deb-dir>|stock}"
 work="${WORKDIR:-$(mktemp -d)}"
-tests=(bgp_evpn_type5_bestpath_change bgp_evpn_type5_bulk_export bgp_evpn_type5_withdraw_sweep)
+tests=(bgp_evpn_type5_bestpath_change bgp_evpn_type5_bulk_export bgp_evpn_type5_withdraw_sweep bgp_bfd_peer_group_move)
 
 [ "$(id -u)" = 0 ] || { echo "test-debs.sh: run as root" >&2; exit 2; }
 case "$expect" in pass|fail) : ;; *) echo "test-debs.sh: expected outcome is pass or fail, not '${expect}'" >&2; exit 2 ;; esac
