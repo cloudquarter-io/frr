@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: © 2026 cloudquarter.io
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# The image that carries the packages: nothing runs in it. The CQDCP chart runs
+# it as an init container of the API pod and copies /debs out
+# (evpn.frr.packagesImage); the API serves the files to the gateways.
+FROM busybox:1.36.1
+COPY out/ /debs/

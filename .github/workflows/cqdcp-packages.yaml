@@ -1,0 +1,159 @@
+# SPDX-FileCopyrightText: © 2026 cloudquarter.io
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# The cloudquarter build of FRR for the CQDCP gateways (cqdcp/README.md):
+# built through FRR's own Debian packaging on the Ubuntu release the gateways
+# run, proven by the topotests this branch adds — on frr-stable's stock package
+# of the same version every test module must fail, on the build every test
+# must pass — and, on a release tag, published as the public image the CQDCP
+# chart's evpn.frr.packagesImage names.
+#
+# GitHub-hosted runners: the topotests need root and kernel modules. A
+# published image tag is immutable: a tag that exists is never overwritten.
+
+name: cqdcp packages
+
+on:
+  push:
+    branches: ['cqdcp/**']
+    tags: ['frr-*-cq.*']
+    paths-ignore:
+      - 'doc/**'
+  pull_request:
+    branches: ['cqdcp/**']
+  workflow_dispatch:
+
+concurrency:
+  group: cqdcp-packages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/cloudquarter-io/frr
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Build the packages
+        run: sudo cqdcp/build-debs.sh out
+
+      - name: Record the build
+        run: |
+          {
+            echo '### FRR packages'
+            echo
+            echo '```'
+            cat out/SHA256SUMS
+            echo '```'
+            echo
+            echo '```json'
+            cat out/manifest.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the packages
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: frr-packages
+          path: out/
+          if-no-files-found: error
+
+  # The tests have teeth: on the stock package every module fails.
+  test-stock:
+    name: Topotests on the stock package (expect failure)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Run the topotests on frr-stable's package
+        run: sudo cqdcp/test-debs.sh fail stock
+
+  test-build:
+    name: Topotests on the build (expect success)
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Download the packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: frr-packages
+          path: out
+
+      - name: Run the topotests on the build
+        run: sudo cqdcp/test-debs.sh pass out
+
+  publish:
+    name: Publish the image
+    needs: [build, test-stock, test-build]
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Download the packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: frr-packages
+          path: out
+
+      - name: Build and push the image
+        env:
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          (cd out && sha256sum -c SHA256SUMS)
+          [ "$(jq -r .source.tag out/manifest.json)" = "$TAG" ] || { echo "::error::manifest built from $(jq -r .source.tag out/manifest.json), not ${TAG}" >&2; exit 1; }
+          ref="${IMAGE}:${TAG}"
+          printf '%s' "$REGISTRY_PASSWORD" | docker login ghcr.io -u "$REGISTRY_USERNAME" --password-stdin
+          if docker manifest inspect "$ref" >/dev/null 2>&1; then
+            echo "::error::${ref} already exists — published packages are immutable; take the next -cq.<n>" >&2
+            exit 1
+          fi
+          docker build -f cqdcp/Containerfile -t "$ref" .
+          docker push "$ref"
+          digest="$(docker inspect --format='{{index .RepoDigests 0}}' "$ref")"
+          {
+            echo '### Published'
+            echo
+            echo "- tag: \`${ref}\`"
+            echo "- digest: \`${digest}\`"
+            echo "- packages: \`$(jq -r .version out/manifest.json)\`"
+            echo
+            echo "Set evpn.frr.packagesImage to the digest reference."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "published ${digest}"
