@@ -74,7 +74,18 @@ for t in "${tests[@]}"; do
   summary="$(grep -E '^=+ .*(passed|failed|error).* in [0-9.]+s' "$out" | tail -1)"
   [ -n "$summary" ] || { echo "test-debs.sh: ${t} printed no pytest summary — the tests did not run" >&2; exit 2; }
   if grep -qE '[0-9]+ error' <<<"$summary"; then
-    echo "test-debs.sh: ${t} had errors, not test failures: ${summary}" >&2; exit 2
+    # An error at setup or collection means the module never ran: an error of
+    # this script either way. On the stock package a module may also error at
+    # teardown after failing for the defect (stock bgpd can report leaks when
+    # stopped on that path); when every error is a teardown error and the
+    # module failed, the fail verdict stands. On the build any error fails.
+    nerr="$(sed -nE 's/.* ([0-9]+) errors?( |,).*/\1/p' <<<"$summary")"
+    nteardown="$(grep -cE ' ERROR at teardown of ' "$out" || true)"
+    if [ "$expect" = fail ] && grep -qE '[0-9]+ failed' <<<"$summary" && [ -n "$nerr" ] && [ "$nteardown" = "$nerr" ]; then
+      echo "test-debs.sh: ${t}: ${nteardown} teardown error(s) after the failure, the fail verdict stands: ${summary}"
+    else
+      echo "test-debs.sh: ${t} had errors, not test failures: ${summary}" >&2; exit 2
+    fi
   fi
   if grep -qE '[0-9]+ failed' <<<"$summary"; then outcome=fail; else outcome=pass; fi
   echo "topotest ${t}: ${outcome} (expected ${expect}) — ${summary}"

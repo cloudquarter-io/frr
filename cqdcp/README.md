@@ -53,11 +53,12 @@ The route servers' listen-range clients hit this. The branch closes it with:
 5. The topotest `bgp_bfd_peer_group_move` from the same pull request,
    installing its routes with staticd instead of sharpd (the Debian packages
    ship no sharpd): it fails on the stock package and passes on the build.
-   The pull request's `bgp_ospf_bfd_peer_group_move` is carried but not run:
-   10.7.1's bfdd takes a session down whenever one of its clients
-   deregisters, even while another still holds it, so the test fails at its
-   first step (OSPF's BFD removed, bgpd left as the only client) on the stock
-   package and on the build alike, before any peer-group move.
+   The pull request's `bgp_ospf_bfd_peer_group_move` is carried as upstream
+   wrote it (it needs sharpd) but not run: in a staticd version of it, the
+   first check, OSPF's BFD removed with bgpd left as the session's only
+   client, fails on the stock package and on the build alike, before any
+   peer-group move, because 10.7.1's bfdd takes a session down whenever one
+   of its clients deregisters, even while another still holds it.
 
 ## Build, proof and publication
 

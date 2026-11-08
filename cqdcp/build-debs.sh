@@ -45,7 +45,7 @@ mk-build-deps -i -r -t 'apt-get -y -qq --no-install-recommends' debian/control
 # targets Debian unstable; the gateways run Ubuntu.
 DEBEMAIL=cqdcp@cloudquarter.io DEBFULLNAME=cqdcp dch --newversion "$version" \
   --distribution "$DEB_DISTRIBUTION" --force-distribution --force-bad-version \
-  "cloudquarter build of ${FRR_UPSTREAM_TAG} (${src_tag}): the EVPN type-5 withdrawal fixes, see cqdcp/README.md."
+  "cloudquarter build of ${FRR_UPSTREAM_TAG} (${src_tag}): the fixes listed in cqdcp/README.md."
 
 dpkg-buildpackage -us -uc -b -j"$(nproc)"
 
