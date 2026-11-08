@@ -67,7 +67,6 @@ def setup_module(mod):
                 (TopoRouter.RD_STATIC, None),
                 (TopoRouter.RD_BFD, None),
                 (TopoRouter.RD_BGP, None),
-                (TopoRouter.RD_SHARP, None),
             ],
         )
 
@@ -128,6 +127,21 @@ def _check_converged(groups):
     return None
 
 
+def _install_routes(router):
+    """Install ROUTES /32s from 10.100.0.0, next hop 10.0.12.1, as static routes.
+
+    Upstream installs them with sharpd; the Debian packages these tests run
+    against (frr-stable's and the cloudquarter build) ship no sharpd, so
+    staticd installs the same routes and r2 redistributes them through the
+    R2-ROUTES route-map, which leaves r2's other static routes out.
+    """
+    lines = [
+        "ip route 10.100.{}.{}/32 10.0.12.1".format(i // 256, i % 256)
+        for i in range(ROUTES)
+    ]
+    router.vtysh_multicmd("\n".join(lines), pretty_output=False)
+
+
 def _expect_converged(msg, groups):
     test_func = functools.partial(_check_converged, groups)
     _, result = topotest.run_and_expect(test_func, None, count=90, wait=1)
@@ -171,9 +185,7 @@ def test_bgp_bfd_converge():
         pytest.skip(tgen.errors)
 
     step("Install {} routes on r2 and wait for BGP and BFD".format(ROUTES))
-    tgen.gears["r2"].vtysh_cmd(
-        "sharp install routes 10.100.0.0 nexthop 10.0.12.1 {}".format(ROUTES)
-    )
+    _install_routes(tgen.gears["r2"])
     _expect_converged(
         "initial convergence", {"10.254.0.2": "EDGE1", "10.0.12.2": "SH1"}
     )
