@@ -105,7 +105,8 @@ def _send_failed():
 
 def _bgpd_connected():
     out = get_topogen().gears["r1"].vtysh_cmd("show zebra client summary")
-    return re.search(r"^bgp\b", out, re.M) is not None
+    # bgpd's main client reads "bgp"; its label manager client "bgp[0:1]".
+    return re.search(r"^bgp\s", out, re.M) is not None
 
 
 def _check_session_up():
