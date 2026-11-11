@@ -60,6 +60,21 @@ The route servers' listen-range clients hit this. The branch closes it with:
    peer-group move, because 10.7.1's bfdd takes a session down whenever one
    of its clients deregisters, even while another still holds it.
 
+FRR 10.7.1 also never sends a BFD session again whose registration failed
+because the daemon had no connection to zebra (a route server's listen-range
+clients reconnecting while its bgpd is still reaching zebra at start), and
+it keeps no session in bfdd once its own zebra connection drops: zebra
+removes a closed client's sessions from bfdd and asks for a replay only when
+bfdd itself (re)connects. The branch closes it with:
+
+6. `lib: replay the BFD sessions on every connection to zebra` — a daemon
+   sends every installed session, and every session it failed to send,
+   again each time it connects to zebra, as it does when bfdd reconnects.
+7. The topotest `bgp_bfd_zebra_reconnect`: bgpd starts with no reachable
+   zebra socket after bfdd has registered, and its neighbor's session must
+   come up once the socket appears; it fails on the stock package and passes
+   on the build.
+
 ## Build, proof and publication
 
 `.github/workflows/cqdcp-packages.yaml` runs on every push to a `cqdcp/**`
