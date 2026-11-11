@@ -860,21 +860,16 @@ void bfd_sess_show(struct vty *vty, struct json_object *json,
  * Zebra communication related.
  */
 
-/**
- * Callback for reinstallation of all registered BFD sessions.
- *
- * Use this as `zclient` `bfd_dest_replay` callback.
- */
-int zclient_bfd_session_replay(ZAPI_CALLBACK_ARGS)
+static void bfd_sessions_replay(struct zclient *zclient, vrf_id_t vrf_id)
 {
 	struct bfd_session_params *bsp;
 
 	if (!zclient->bfd_integration)
-		return 0;
+		return;
 
 	/* Do nothing when shutting down. */
 	if (bsglobal.shutting_down)
-		return 0;
+		return;
 
 	if (bsglobal.debugging)
 		zlog_debug("%s: sending all sessions registered", __func__);
@@ -898,8 +893,31 @@ int zclient_bfd_session_replay(ZAPI_CALLBACK_ARGS)
 		bsp->lastev = BSE_INSTALL;
 		event_execute(bsglobal.tm, _bfd_sess_send, bsp, 0, NULL);
 	}
+}
 
+/**
+ * Callback for reinstallation of all registered BFD sessions.
+ *
+ * Use this as `zclient` `bfd_dest_replay` callback.
+ */
+int zclient_bfd_session_replay(ZAPI_CALLBACK_ARGS)
+{
+	bfd_sessions_replay(zclient, vrf_id);
 	return 0;
+}
+
+void bfd_protocol_integration_zebra_connected(struct zclient *zclient)
+{
+	/*
+	 * zebra drops this client's sessions from bfdd when its connection
+	 * closes, and a session whose send failed while there was no
+	 * connection was never registered: only a bfdd (re)connection makes
+	 * zebra ask for a replay, so send them all again on every connection.
+	 */
+	if (zclient != bsglobal.zc)
+		return;
+
+	bfd_sessions_replay(zclient, VRF_DEFAULT);
 }
 
 int zclient_bfd_session_update(ZAPI_CALLBACK_ARGS)

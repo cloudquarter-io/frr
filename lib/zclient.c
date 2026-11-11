@@ -864,6 +864,9 @@ int zclient_start(struct zclient *zclient)
 	if (zclient->zebra_connected)
 		(*zclient->zebra_connected)(zclient);
 
+	if (zclient->bfd_integration)
+		bfd_protocol_integration_zebra_connected(zclient);
+
 	return 0;
 }
 

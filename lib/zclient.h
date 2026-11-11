@@ -399,6 +399,8 @@ struct zclient {
 
 /* lib handlers added in bfd.c */
 extern int zclient_bfd_session_replay(ZAPI_CALLBACK_ARGS);
+/* Sends the BFD sessions again on a connection to zebra (lib/bfd.c). */
+extern void bfd_protocol_integration_zebra_connected(struct zclient *zclient);
 extern int zclient_bfd_session_update(ZAPI_CALLBACK_ARGS);
 
 /* Zebra API message flag. */
