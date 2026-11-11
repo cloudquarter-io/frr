@@ -12,13 +12,14 @@ test_bgp_bfd_zebra_reconnect.py
 A BFD session bgpd could not register while it had no connection to zebra is
 registered once the connection comes up.
 
-r1's bgpd starts with its zebra socket path pointing nowhere, so the BFD
-session its neighbor asks for cannot be sent ("was not installed"), while r1's
-bfdd is already registered with zebra. zebra asks the protocol daemons for a
-replay of their sessions only when bfdd (re)connects, so once bgpd reaches
-zebra nothing but bgpd itself can send the session again. The neighbor is
-passive and r2 runs no bgpd: BGP never connects, so no source, interface or
-TTL change re-installs the session either.
+r1's bgpd is restarted with its zebra socket path pointing nowhere and given
+its BGP configuration there, so the BFD session its neighbor asks for cannot be
+sent ("was not installed"), while r1's bfdd stays registered with zebra. zebra
+asks the protocol daemons for a replay of their sessions only when bfdd
+(re)connects, so once bgpd reaches zebra nothing but bgpd itself can send the
+session again. The neighbor is passive and r2 runs no bgpd: BGP never
+connects, so no source, interface or TTL change re-installs the session
+either.
 """
 
 import json
@@ -38,10 +39,21 @@ from lib.topogen import Topogen, TopoRouter, get_topogen
 
 pytestmark = [pytest.mark.bgpd, pytest.mark.bfdd]
 
-# The zebra socket r1's bgpd is started with: absent until the test links it
-# to zebra's socket.
+# The zebra socket r1's bgpd is restarted with: absent until the test links
+# it to zebra's socket.
 LATE_ZAPI = "/var/run/frr/zserv-late.api"
 ZAPI = "/var/run/frr/zserv.api"
+
+R1_BGP = """
+configure terminal
+debug bgp bfd
+router bgp 65001
+ bgp router-id 192.0.2.1
+ no bgp ebgp-requires-policy
+ neighbor 192.0.2.2 remote-as 65002
+ neighbor 192.0.2.2 passive
+ neighbor 192.0.2.2 bfd
+"""
 
 
 def build_topo(tgen):
@@ -63,7 +75,7 @@ def setup_module(mod):
             (TopoRouter.RD_ZEBRA, None),
             (TopoRouter.RD_MGMTD, None),
             (TopoRouter.RD_BFD, None),
-            (TopoRouter.RD_BGP, "-z {}".format(LATE_ZAPI)),
+            (TopoRouter.RD_BGP, None),
         ],
     )
     tgen.gears["r2"].load_frr_config(
@@ -136,6 +148,15 @@ def test_bfd_send_fails_without_zebra():
     tgen = get_topogen()
     if tgen.routers_have_failure():
         pytest.skip(tgen.errors)
+
+    # topotest waits for a daemon it starts with zebra to reach zebra, so
+    # bgpd starts connected and is restarted alone without a reachable socket.
+    step("Restart r1's bgpd with no reachable zebra socket and configure it")
+    r1 = tgen.gears["r1"]
+    r1.killDaemons(["bgpd"])
+    r1.net.daemons_options["bgpd"] = "-z {}".format(LATE_ZAPI)
+    r1.startDaemons(["bgpd"])
+    r1.vtysh_cmd(R1_BGP)
 
     step("r1's bgpd has no zebra connection: its BFD session is not sent")
     _, result = topotest.run_and_expect(_send_failed, True, count=30, wait=1)
